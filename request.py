@@ -17,9 +17,6 @@ args = parser.parse_args()
 DOMAIN = args.domain
 TOKEN = args.token
 COURSE_INSTANCE_ID = args.course
-print(DOMAIN)
-print(TOKEN)
-print(COURSE_INSTANCE_ID)
 
 server = urljoin(DOMAIN, "/pl/api/v1")
 
@@ -143,7 +140,8 @@ def main():
             done_cnt += 1
             print(f"Progress: {done_cnt}/{len(assmt_instances)} ({done_cnt / len(assmt_instances) * 100:.2f}%)")
 
-    with open("total_score.csv", mode="w", newline="", encoding="utf-8") as f:
+    results_filename = "total_score.csv"
+    with open(f"{results_filename}", mode="w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         writer.writerow(["uid", "instance", "points", "orig_points", "orig_date", "makeup_points", "makeup_date"])
         for item in results:
@@ -163,7 +161,7 @@ def main():
                 ]
             )
 
-    print(f"Total score saved to total_score.csv")
+    print(f"Total score saved to {results_filename}")
 
 
 if __name__ == "__main__":
