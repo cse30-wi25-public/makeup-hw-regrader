@@ -149,11 +149,16 @@ def main():
                 continue
             if item["orig_points"] is not None and math.isclose(item["orig_points"], item["makeup_points"]):
                 continue
+            final_points = (
+                item["makeup_points"] / 2
+                if item["orig_points"] is None
+                else (item["orig_points"] + item["makeup_points"]) / 2
+            )
             writer.writerow(
                 [
                     item["uid"],
                     1,
-                    item["makeup_points"],
+                    final_points,
                     item["orig_points"],
                     item["orig_date"],
                     item["makeup_points"],
