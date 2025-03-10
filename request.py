@@ -8,6 +8,7 @@ import math
 import concurrent.futures
 import csv
 import argparse
+from collections import defaultdict
 
 parser = argparse.ArgumentParser()
 parser.add_argument("-d", "--domain", help="PrairieLearn host", default="https://us.prairielearn.com")
@@ -87,32 +88,61 @@ def get_assmt_instances(assmt_id):
     return uid2id
 
 
-def get_grade(assmt_instance_id, due_date, makeup_due_date):
-    logs = api_request(f"/course_instances/{COURSE_INSTANCE_ID}/assessment_instances/{assmt_instance_id}/log")
-    grades = [
-        (data["data"], datetime.fromisoformat(data["date_iso8601"]))
-        for data in logs
-        if data["event_name"] == "Score assessment"
+def get_grade(uid, assmt_instance_id, due_date, makeup_due_date):
+    log = api_request(f"/course_instances/{COURSE_INSTANCE_ID}/assessment_instances/{assmt_instance_id}/log")
+    filtered_log = [
+        event
+        for event in log
+        if event["event_name"] == "Score question" or event["event_name"] == "Submission"
     ]
-    orig = max([(f, d) for (f, d) in grades if d < due_date], key=lambda x: x[0]["points"], default=None)
-    makeup = max(
-        [(f, d) for (f, d) in grades if due_date < d < makeup_due_date], key=lambda x: x[0]["points"], default=None
-    )
-    # TEST: point == credit && makeup >= orig
-    assert orig is None or math.isclose(orig[0]["score_perc"], orig[0]["points"] * 100 / orig[0]["max_points"])
-    assert orig is None or makeup is None or makeup[0]["points"] >= orig[0]["points"]
 
+    # assumption: manual grading will only ever happen for single-variant problems, unclear how to resolve otherwise
+    last_submission_time_for_question = dict()
+    for event in filtered_log:
+        quid = event["question_id"]
+        event_name = event["event_name"]
+        time = datetime.fromisoformat(event["date_iso8601"])
+        event_uid = event["auth_user_uid"]
+        if event_name == "Submission":
+            last_submission_time_for_question[quid] = time
+        elif event_name == "Score question" and uid != event_uid:
+            # if question was scored by someone other than student, assume it was a staff member 
+            # (could include a staff roster in the future)
+            # fake the event time as last submission time
+            time = last_submission_time_for_question[quid]
+        event["date_iso8601"] = time # overwrite with datetime to avoid converting again later
+
+    # now aggregate score questions as usual
+    filtered_log = [
+        (event["data"], event["date_iso8601"], event["question_id"])
+        for event in filtered_log
+        if event["event_name"] == "Score question"
+    ]
+
+    scores_per_question_orig = defaultdict(int)
+    scores_per_question_makeup = defaultdict(int)
+
+    for data, time, quid in filtered_log:
+        # pick the best score per question before deadline and before makeup deadline
+        if time <= due_date and data["points"] > scores_per_question_orig[quid]:
+            scores_per_question_orig[quid] = data["points"]
+        if time <= makeup_due_date and data["points"] > scores_per_question_makeup[quid]:
+            scores_per_question_makeup[quid] = data["points"]
+
+    orig = sum(scores_per_question_orig.values())
+    makeup = sum(scores_per_question_makeup.values())
+    # orig and makeup are the points before deadline and points before late deadline
     return orig, makeup
 
 
 def fetch_grade(uid, assmt_instance_id, due_date, makeup_due_date):
-    orig, makeup = get_grade(assmt_instance_id, due_date, makeup_due_date)
+    orig, makeup = get_grade(uid, assmt_instance_id, due_date, makeup_due_date)
     return {
         "uid": uid,
-        "orig_points": orig[0]["points"] if orig else None,
-        "orig_date": orig[1] if orig else None,
-        "makeup_points": makeup[0]["points"] if makeup else None,
-        "makeup_date": makeup[1] if makeup else None,
+        "orig_points": orig,
+        "orig_date": due_date,
+        "makeup_points": makeup,
+        "makeup_date": makeup_due_date,
     }
 
 
@@ -145,15 +175,9 @@ def main():
         writer = csv.writer(f)
         writer.writerow(["uid", "instance", "points", "orig_points", "orig_date", "makeup_points", "makeup_date"])
         for item in results:
-            if item["makeup_points"] is None:
+            if math.isclose(item["makeup_points"], item["orig_points"]):
                 continue
-            if item["orig_points"] is not None and math.isclose(item["orig_points"], item["makeup_points"]):
-                continue
-            final_points = (
-                item["makeup_points"] / 2
-                if item["orig_points"] is None
-                else (item["orig_points"] + item["makeup_points"]) / 2
-            )
+            final_points = (item["orig_points"] + item["makeup_points"]) / 2
             writer.writerow(
                 [
                     item["uid"],
